@@ -63,10 +63,10 @@ class ElevatorControlSim:
         self.control_frame = tk.Frame(master)
         self.control_frame.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # 模擬「滿載」的 Checkbutton（打勾表示滿載，此時外部呼叫不立即回應）
+        # 模擬「緊急按鈕」Checkbutton（打勾表示滿載，此時外部呼叫不立即回應）
         self.full_load_var = tk.BooleanVar(value=False)
         self.full_load_check = tk.Checkbutton(
-            self.control_frame, text="滿載", variable=self.full_load_var, command=self.toggle_full_load
+            self.control_frame, text="緊急按鈕", variable=self.full_load_var, command=self.toggle_full_load
         )
         self.full_load_check.pack(pady=10)
 
@@ -114,14 +114,14 @@ class ElevatorControlSim:
         # 啟動定時更新的主迴圈
         self.master.after(100, self.simulation_loop)
 
-    # 當滿載狀態切換時觸發
+    # 當緊急按鈕切換時觸發
     def toggle_full_load(self):
         self.full_load = self.full_load_var.get()
         if self.full_load:
-            print("電梯已進入滿載模式。")
+            print("電梯已進入緊急（滿載）模式。")
         else:
-            print("電梯已解除滿載模式。")
-            # 當滿載解除時，將暫存的外部請求加入處理
+            print("電梯已解除緊急模式。")
+            # 當緊急模式解除時，將暫存的外部請求加入處理
             while self.pending_external_requests:
                 req = self.pending_external_requests.popleft()
                 self.add_request(req.floor, req.button_type)
@@ -138,10 +138,10 @@ class ElevatorControlSim:
                 self.internal_requests.append(new_request)
                 print(f"內部請求：樓層 {floor}")
         else:
-            # 如果滿載，外部請求暫存起來
+            # 如果處於緊急模式，外部請求暫存起來
             if self.full_load:
                 self.pending_external_requests.append(new_request)
-                print(f"外部請求：樓層 {floor}（滿載狀態，暫存）")
+                print(f"外部請求：樓層 {floor}（緊急模式，暫存）")
             else:
                 if not any(req.floor == floor and req.button_type == button_type for req in self.external_requests):
                     self.external_requests.append(new_request)
@@ -151,7 +151,7 @@ class ElevatorControlSim:
         if not self.is_moving_flag:
             self.master.after(100, self.process_requests)
 
-    # 回傳目前所有有效的請求（滿載時只處理內部請求）
+    # 回傳目前所有有效的請求（緊急模式下只處理內部請求）
     def get_active_requests(self):
         if self.full_load:
             return self.internal_requests
@@ -211,7 +211,8 @@ class ElevatorControlSim:
             self.external_requests = [req for req in self.external_requests if req.floor != self.current_floor]
 
     # 利用 after() 實作動畫：從起始樓層移動到目標樓層，總共 frames 幀（本例設定 60 幀）
-    # 在動畫移動過程中，每約 1 秒（約 20 幀）檢查是否有新請求，如果有且符合中途停靠條件，則改為先停靠該樓層
+    # 在動畫移動過程中，每約 1 秒（20 幀）檢查是否有新請求，
+    # 但只考慮移動方向相同的外部請求（內部請求始終處理）。
     def animate_movement(self, start_floor, end_floor, frames):
         self.is_moving_flag = True
         # 記錄啟動移動時的起始樓層，用於判斷中途請求是否介於原本起點與目標之間
@@ -226,39 +227,37 @@ class ElevatorControlSim:
 
         def step():
             if self.animation_frame < self.total_frames:
-                # 每約 1 秒（20 幀）檢查一次中途請求（若電梯未滿載）
+                # 每約 1 秒（20 幀）檢查一次中途請求（若電梯未緊急）
                 if not self.full_load and self.animation_frame % 20 == 0:
                     active = self.get_active_requests()
                     coords = self.canvas.coords(self.elevator_rect)
                     current_y = coords[1]  # 電梯目前上邊緣位置
-                    # 檢查上行的中途停靠
+                    # 檢查上行的中途停靠：只考慮方向為 UP 或內部請求
                     if self.direction == Direction.UP:
                         possible = []
                         for req in active:
-                            # 若該請求的樓層介於原起點與目前目標之間
-                            if self.anim_start_floor < req.floor < self.target_floor:
+                            if (self.anim_start_floor < req.floor < self.target_floor and
+                                req.button_type in (ButtonType.UP, ButtonType.INTERNAL)):
                                 stop_y = self.floor_positions[req.floor] - self.elevator_height
-                                # 若電梯尚未到達該停靠位置（上行時：current_y 還大於 stop_y）
-                                if current_y > stop_y:
+                                if current_y > stop_y:  # 上行：尚未到達
                                     possible.append(req.floor)
                         if possible:
                             new_target = min(possible)
                             if new_target < self.target_floor:
                                 print(f"中途請求：改為先停 {new_target} 樓")
                                 self.target_floor = new_target
-                                # 重新計算剩餘幀數（此處設定剩餘 20 幀完成該段移動）
                                 remaining_frames = 20
                                 self.total_frames = self.animation_frame + remaining_frames
                                 new_end_y = self.floor_positions[new_target] - self.elevator_height
                                 self.dy = (new_end_y - current_y) / remaining_frames
-                    # 檢查下行的中途停靠
+                    # 檢查下行的中途停靠：只考慮方向為 DOWN 或內部請求
                     elif self.direction == Direction.DOWN:
                         possible = []
                         for req in active:
-                            if self.anim_start_floor > req.floor > self.target_floor:
+                            if (self.anim_start_floor > req.floor > self.target_floor and
+                                req.button_type in (ButtonType.DOWN, ButtonType.INTERNAL)):
                                 stop_y = self.floor_positions[req.floor] - self.elevator_height
-                                # 下行時：若電梯尚未到達該停靠位置（current_y 還小於 stop_y）
-                                if current_y < stop_y:
+                                if current_y < stop_y:  # 下行：尚未到達
                                     possible.append(req.floor)
                         if possible:
                             new_target = max(possible)
@@ -277,12 +276,13 @@ class ElevatorControlSim:
                 # 動畫結束，強制將電梯位置修正到目標位置
                 coords = self.canvas.coords(self.elevator_rect)
                 final_y = self.floor_positions[self.target_floor] - self.elevator_height
-                self.canvas.coords(self.elevator_rect, coords[0], final_y, coords[0] + self.elevator_width, final_y + self.elevator_height)
+                self.canvas.coords(self.elevator_rect, coords[0], final_y,
+                                   coords[0] + self.elevator_width, final_y + self.elevator_height)
                 self.current_floor = self.target_floor
                 self.is_moving_flag = False
                 self.remove_completed_requests()
                 self.info_label.config(text=f"已到 {self.current_floor} 樓。{self.get_status_text()}")
-                # 當滿載解除且有暫存的外部請求時，將其加入
+                # 當緊急模式解除且有暫存的外部請求時，將其加入
                 if not self.full_load and self.pending_external_requests:
                     while self.pending_external_requests:
                         req = self.pending_external_requests.popleft()
