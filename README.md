@@ -63,4 +63,4 @@ python elevator_simulation.py
 
 ---
 
-若有任何問題或建議，請隨時提出，謝謝！
+聯絡我：rayc57429@gmail.com 
