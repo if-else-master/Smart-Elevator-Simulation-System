@@ -24,7 +24,7 @@ class Request:
         self.button_type = button_type
         self.timestamp = time.time()
 
-# 電梯模擬控制類別（整合 GUI、電梯動畫、紅色辨識與緊急模式）
+# 電梯模擬控制類別（整合 GUI、電梯動畫、突破量偵測與緊急模式）
 class ElevatorControlSim:
     def __init__(self, master):
         self.master = master
@@ -32,10 +32,28 @@ class ElevatorControlSim:
 
         # 建立攝影機物件（預設使用設備 0）
         self.cap = cv2.VideoCapture(0)
-
+        
+        # 背景差分器初始化
+        self.background_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
+        
+        # 突破量相關參數
+        self.penetration_area = 0  # 當前突破面積
+        self.total_area = 0  # 畫面總面積
+        self.penetration_ratio = 0  # 突破量比例
+        self.penetration_threshold = 0.15  # 緊急模式啟動閾值 (15%)
+        
+        # 初始化前一幀的遮罩
+        self.prev_mask = None
+        self.baseline_established = False
+        self.stabilization_frames = 0
+        
+        # 顯示畫面的尺寸
+        self.display_width = 240  # 縮小顯示尺寸
+        self.display_height = 180
+        
         # 建立左側畫布，用以顯示電梯井
         self.canvas = tk.Canvas(master, width=300, height=600, bg="white")
-        self.canvas.pack(side=tk.LEFT)
+        self.canvas.pack(side=tk.LEFT, padx=5, fill=tk.Y)
 
         # 定義樓層位置：此處樓層 3 在上、1 在下
         self.floor_positions = {1: 500, 2: 300, 3: 100}
@@ -61,71 +79,115 @@ class ElevatorControlSim:
         self.external_requests = []
         self.pending_external_requests = deque()
 
-        # 緊急模式相關：手動觸發、紅色偵測自動觸發與總狀態
+        # 緊急模式相關：手動觸發、突破量偵測自動觸發與總狀態
         self.full_load = False        # 總緊急模式（滿載）
         self.manual_emergency = False   # 手動觸發狀態
-        self.auto_emergency = False     # 自動（紅色偵測）觸發狀態
+        self.auto_emergency = False     # 自動（突破量偵測）觸發狀態
 
         # 右側控制面板
         self.control_frame = tk.Frame(master)
-        self.control_frame.pack(side=tk.RIGHT, fill=tk.Y)
+        self.control_frame.pack(side=tk.RIGHT, fill=tk.Y, expand=True, padx=5)
 
-        # 顯示攝影機畫面（包含紅色區域）
-        self.camera_label = tk.Label(self.control_frame)
-        self.camera_label.pack(pady=5)
+        # 建立一個框架來容納攝影機畫面和相關控制項
+        self.camera_frame = tk.Frame(self.control_frame)
+        self.camera_frame.pack(fill=tk.X, pady=5)
 
-        # 紅色面積資訊顯示
-        self.red_info_label = tk.Label(self.control_frame, text="紅色: --%  非紅色: --%")
-        self.red_info_label.pack(pady=5)
+        # 顯示攝影機畫面（帶有突破量資訊）- 尺寸更小
+        self.camera_label = tk.Label(self.camera_frame)
+        self.camera_label.pack(pady=2)
+
+        # 突破量資訊顯示
+        self.penetration_info_label = tk.Label(self.camera_frame, text=f"突破量: {self.penetration_ratio:.2f}%")
+        self.penetration_info_label.pack(pady=2)
+        
+        # 建立控制項框架
+        self.controls_frame = tk.Frame(self.control_frame)
+        self.controls_frame.pack(fill=tk.X, pady=5)
+        
+        # 重置背景按鈕
+        self.reset_bg_button = tk.Button(
+            self.controls_frame, text="重置背景", command=self.reset_background
+        )
+        self.reset_bg_button.pack(fill=tk.X, padx=5, pady=2)
+        
+        # 緊急閾值調整滑桿
+        tk.Label(self.controls_frame, text="緊急模式閾值 (%):").pack(pady=2)
+        self.emergency_slider = tk.Scale(self.controls_frame, from_=0, to=100, orient=tk.HORIZONTAL, 
+                                         command=self.update_emergency_threshold)
+        self.emergency_slider.set(self.penetration_threshold * 100)
+        self.emergency_slider.pack(fill=tk.X, padx=5, pady=2)
 
         # 緊急按鈕（手動觸發）
         self.full_load_var = tk.BooleanVar(value=False)
         self.full_load_check = tk.Checkbutton(
-            self.control_frame, text="緊急按鈕", variable=self.full_load_var, command=self.toggle_full_load
+            self.controls_frame, text="緊急按鈕", variable=self.full_load_var, command=self.toggle_full_load
         )
-        self.full_load_check.pack(pady=10)
+        self.full_load_check.pack(pady=5)
 
+        # 建立呼叫按鈕框架
+        self.buttons_frame = tk.Frame(self.control_frame)
+        self.buttons_frame.pack(fill=tk.X, pady=5)
+        
+        # 內部呼叫框架
+        self.internal_frame = tk.Frame(self.buttons_frame)
+        self.internal_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        
         # 內部呼叫按鈕（樓層 3,2,1，從上到下排列）
-        tk.Label(self.control_frame, text="內部呼叫").pack(pady=5)
+        tk.Label(self.internal_frame, text="內部呼叫").pack(pady=2)
         self.btn_internal_floor3 = tk.Button(
-            self.control_frame, text="3", command=lambda: self.add_request(3, ButtonType.INTERNAL)
+            self.internal_frame, text="3", command=lambda: self.add_request(3, ButtonType.INTERNAL)
         )
-        self.btn_internal_floor3.pack(fill=tk.X, padx=5, pady=2)
+        self.btn_internal_floor3.pack(fill=tk.X, padx=2, pady=1)
         self.btn_internal_floor2 = tk.Button(
-            self.control_frame, text="2", command=lambda: self.add_request(2, ButtonType.INTERNAL)
+            self.internal_frame, text="2", command=lambda: self.add_request(2, ButtonType.INTERNAL)
         )
-        self.btn_internal_floor2.pack(fill=tk.X, padx=5, pady=2)
+        self.btn_internal_floor2.pack(fill=tk.X, padx=2, pady=1)
         self.btn_internal_floor1 = tk.Button(
-            self.control_frame, text="1", command=lambda: self.add_request(1, ButtonType.INTERNAL)
+            self.internal_frame, text="1", command=lambda: self.add_request(1, ButtonType.INTERNAL)
         )
-        self.btn_internal_floor1.pack(fill=tk.X, padx=5, pady=2)
+        self.btn_internal_floor1.pack(fill=tk.X, padx=2, pady=1)
 
+        # 外部呼叫框架
+        self.external_frame = tk.Frame(self.buttons_frame)
+        self.external_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        
         # 外部呼叫按鈕
-        tk.Label(self.control_frame, text="外部呼叫").pack(pady=5)
+        tk.Label(self.external_frame, text="外部呼叫").pack(pady=2)
         self.btn_ext_3_down = tk.Button(
-            self.control_frame, text="3 樓 下", command=lambda: self.add_request(3, ButtonType.DOWN)
+            self.external_frame, text="3↓", width=4, command=lambda: self.add_request(3, ButtonType.DOWN)
         )
-        self.btn_ext_3_down.pack(fill=tk.X, padx=5, pady=2)
+        self.btn_ext_3_down.pack(fill=tk.X, padx=2, pady=1)
         self.btn_ext_2_up = tk.Button(
-            self.control_frame, text="2 樓 上", command=lambda: self.add_request(2, ButtonType.UP)
+            self.external_frame, text="2↑", width=4, command=lambda: self.add_request(2, ButtonType.UP)
         )
-        self.btn_ext_2_up.pack(fill=tk.X, padx=5, pady=2)
+        self.btn_ext_2_up.pack(fill=tk.X, padx=2, pady=1)
         self.btn_ext_2_down = tk.Button(
-            self.control_frame, text="2 樓 下", command=lambda: self.add_request(2, ButtonType.DOWN)
+            self.external_frame, text="2↓", width=4, command=lambda: self.add_request(2, ButtonType.DOWN)
         )
-        self.btn_ext_2_down.pack(fill=tk.X, padx=5, pady=2)
+        self.btn_ext_2_down.pack(fill=tk.X, padx=2, pady=1)
         self.btn_ext_1_up = tk.Button(
-            self.control_frame, text="1 樓 上", command=lambda: self.add_request(1, ButtonType.UP)
+            self.external_frame, text="1↑", width=4, command=lambda: self.add_request(1, ButtonType.UP)
         )
-        self.btn_ext_1_up.pack(fill=tk.X, padx=5, pady=2)
+        self.btn_ext_1_up.pack(fill=tk.X, padx=2, pady=1)
 
         # 狀態訊息
-        self.info_label = tk.Label(self.control_frame, text="狀態：Idle")
-        self.info_label.pack(pady=20)
+        self.info_label = tk.Label(self.control_frame, text="狀態：Idle", wraplength=280)
+        self.info_label.pack(pady=10)
 
-        # 啟動主迴圈與紅色偵測更新
+        # 啟動主迴圈與突破量偵測更新
         self.master.after(100, self.simulation_loop)
-        self.master.after(100, self.update_red_detection)
+        self.master.after(100, self.update_penetration_detection)
+    
+    # 重置背景
+    def reset_background(self):
+        self.background_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
+        self.baseline_established = False
+        self.stabilization_frames = 0
+        print("背景已重置，將重新建立基準。")
+    
+    # 更新緊急模式閾值
+    def update_emergency_threshold(self, val):
+        self.penetration_threshold = float(val) / 100.0
 
     # 更新總緊急模式：總狀態 = 手動 OR 自動
     def update_emergency_mode(self):
@@ -299,45 +361,107 @@ class ElevatorControlSim:
                 self.master.after(500, self.process_requests)
         step()
 
-    # 持續更新紅色辨識：讀取攝影機影像，計算紅色比例，並更新顯示
-    # 同時根據紅色比例自動觸發或解除自動緊急模式
-    def update_red_detection(self):
+    # 持續更新突破量偵測：計算畫面中移動物體佔用的面積
+    def update_penetration_detection(self):
         ret, frame = self.cap.read()
         if ret:
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            lower_red1 = np.array([0, 50, 50])
-            upper_red1 = np.array([10, 255, 255])
-            lower_red2 = np.array([170, 50, 50])
-            upper_red2 = np.array([180, 255, 255])
-            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-            red_mask = cv2.bitwise_or(mask1, mask2)
-            red_pixels = cv2.countNonZero(red_mask)
-            total_pixels = frame.shape[0] * frame.shape[1]
-            red_ratio = red_pixels / total_pixels if total_pixels else 0
-            red_percent = red_ratio * 100
-            non_red_percent = 100 - red_percent
-            self.red_info_label.config(text=f"紅色: {red_percent:.1f}%  非紅色: {non_red_percent:.1f}%")
-            # 自動觸發：若紅色比例低於5%，則自動啟動；否則解除
-            if red_percent < 5:
+            # 建立初始的基準畫面
+            if not self.baseline_established:
+                self.stabilization_frames += 1
+                # 忽略前 10 幀，讓背景減法器先學習背景
+                if self.stabilization_frames > 10:
+                    self.baseline_established = True
+                    print("背景基準已建立完成。")
+                # 先套用背景差分器學習背景
+                self.background_subtractor.apply(frame)
+                
+                # 建立影像複本
+                display_frame = frame.copy()
+                # 顯示建立基準中的訊息
+                cv2.putText(display_frame, f"建立背景基準中 ({self.stabilization_frames}/10)...", 
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                # 調整顯示大小
+                display_frame = cv2.resize(display_frame, (self.display_width, self.display_height))
+                
+                # 轉換為 Tkinter 可顯示的格式
+                rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+                image = Image.fromarray(rgb_frame)
+                photo = ImageTk.PhotoImage(image)
+                self.camera_label.config(image=photo)
+                self.camera_label.image = photo
+                
+                self.master.after(100, self.update_penetration_detection)
+                return
+            
+            # 計算總面積
+            self.total_area = frame.shape[0] * frame.shape[1]
+            
+            # 應用背景差分器
+            fg_mask = self.background_subtractor.apply(frame)
+            
+            # 處理前景遮罩以減少雜訊
+            # 先使用高斯模糊
+            fg_mask = cv2.GaussianBlur(fg_mask, (5, 5), 0)
+            
+            # 二值化，將陰影去除
+            _, fg_mask = cv2.threshold(fg_mask, 128, 255, cv2.THRESH_BINARY)
+            
+            # 形態學操作 (開運算然後閉運算) 去除小雜訊並填補空洞
+            kernel = np.ones((5, 5), np.uint8)
+            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
+            
+            # 計算非零像素（突破面積）
+            self.penetration_area = cv2.countNonZero(fg_mask)
+            
+            # 計算突破量比例
+            self.penetration_ratio = (self.penetration_area / self.total_area) * 100
+            
+            # 更新突破量顯示
+            self.penetration_info_label.config(text=f"突破量: {self.penetration_ratio:.2f}%")
+            
+            # 繪製顯示影像
+            # 創建有顏色的前景遮罩 (用於視覺化)
+            fg_mask_colored = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
+            fg_mask_colored[np.where((fg_mask_colored == [255, 255, 255]).all(axis=2))] = [0, 0, 255]  # 紅色顯示前景
+            
+            # 混合原始影像和前景遮罩
+            alpha = 0.5
+            visualization = cv2.addWeighted(frame, 1, fg_mask_colored, alpha, 0)
+            
+            # 添加突破量資訊
+            cv2.putText(visualization, f"突破量: {self.penetration_ratio:.2f}%", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # 如果突破量超過設定閾值，顯示警告
+            if self.penetration_ratio / 100 >= self.penetration_threshold:
+                cv2.putText(visualization, "⚠️ 物體過多", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                # 自動觸發緊急模式
                 if not self.auto_emergency:
-                    print("偵測到紅色不足5%，自動啟動緊急模式")
+                    print(f"偵測到突破量 {self.penetration_ratio:.2f}% 已超過閾值 {self.penetration_threshold * 100:.0f}%，自動啟動緊急模式")
                 self.auto_emergency = True
             else:
+                # 解除自動緊急模式
                 if self.auto_emergency:
-                    print("偵測到紅色超過5%，自動解除緊急模式")
+                    print(f"偵測到突破量 {self.penetration_ratio:.2f}% 已低於閾值 {self.penetration_threshold * 100:.0f}%，自動解除緊急模式")
                 self.auto_emergency = False
+            
             self.update_emergency_mode()
-
-            # 將紅色區域影像顯示於 GUI
-            red_area = cv2.bitwise_and(frame, frame, mask=red_mask)
-            red_area = cv2.cvtColor(red_area, cv2.COLOR_BGR2RGB)
-            image = Image.fromarray(red_area)
-            image = image.resize((300, 225))
+            
+            # 調整顯示大小
+            visualization = cv2.resize(visualization, (self.display_width, self.display_height))
+            
+            # 轉換為 Tkinter 可顯示的格式
+            rgb_frame = cv2.cvtColor(visualization, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(rgb_frame)
             photo = ImageTk.PhotoImage(image)
             self.camera_label.config(image=photo)
             self.camera_label.image = photo
-        self.master.after(100, self.update_red_detection)
+            
+        self.master.after(100, self.update_penetration_detection)
 
     # 主迴圈更新狀態顯示
     def simulation_loop(self):
