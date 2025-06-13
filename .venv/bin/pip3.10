@@ -1,4 +1,4 @@
-#!/Users/raychang/Documents/專案/Smart-Elevator-Simulation-System/.venv/bin/python3
+#!/Users/raychang/Documents/專案/Smart-Elevator-Simulation-System/.venv/bin/python3.10
 # -*- coding: utf-8 -*-
 import re
 import sys
