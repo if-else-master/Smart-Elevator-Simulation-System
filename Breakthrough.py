@@ -5,6 +5,9 @@ import time
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
+import serial
+import threading
+import glob
 
 class ButtonType(Enum):
     UP = 1
@@ -21,6 +24,84 @@ class Request:
         self.floor = floor
         self.button_type = button_type
         self.timestamp = time.time()
+
+class ArduinoDisplay:
+    def __init__(self, baud_rate=9600):
+        self.baud_rate = baud_rate
+        self.serial = None
+        self.connected = False
+        self.connect()
+        
+    def connect(self):
+        try:
+            # 在 macOS 上尋找 Arduino 串口
+            ports = glob.glob('/dev/cu.usbmodem*') + glob.glob('/dev/cu.usbserial*')
+            
+            if not ports:
+                print("找不到 Arduino 串口，請確認 Arduino 已連接")
+                self.connected = False
+                return
+                
+            # 使用找到的第一個串口
+            port = ports[0]
+            print(f"找到串口: {port}")
+            
+            self.serial = serial.Serial(port, self.baud_rate, timeout=1)
+            time.sleep(2)  # 等待 Arduino 重啟
+            self.connected = True
+            print("Arduino LCD 連接成功")
+        except Exception as e:
+            print(f"Arduino LCD 連接失敗: {e}")
+            print("請檢查:")
+            print("1. Arduino 是否已連接到電腦")
+            print("2. 串口位置是否正確")
+            print("3. Arduino IDE 是否已關閉")
+            self.connected = False
+            
+    def update_display(self, current_floor, status, requests, emergency_mode):
+        if not self.connected:
+            return
+            
+        # 將狀態轉換為英文
+        status_map = {
+            "移動中": "MOVING",
+            "待命": "IDLE",
+            "無請求": "NO REQ",
+            "等待緊急請求": "WAIT EMG",
+            "前往": "TO FLOOR"
+        }
+        
+        # 格式化顯示內容
+        line1 = f"F:{current_floor} {status_map.get(status, status)}"
+        
+        # 處理第二行顯示
+        if emergency_mode:
+            line2 = "EMERGENCY"
+        else:
+            # 將請求轉換為簡潔的英文格式
+            if "無請求" in requests:
+                line2 = "NO REQ"
+            elif "前往" in requests:
+                target = requests.split("前往")[1].split("樓")[0]
+                line2 = f"TO F{target}"
+            else:
+                # 將樓層請求轉換為簡潔格式
+                reqs = requests.replace("樓", "F").replace("，", ",")
+                line2 = reqs
+        
+        try:
+            # 發送更新命令
+            self.serial.write(f"L1:{line1}\n".encode())
+            self.serial.write(f"L2:{line2}\n".encode())
+        except Exception as e:
+            print(f"LCD 更新失敗: {e}")
+            self.connected = False
+            
+    def close(self):
+        if self.serial and self.connected:
+            self.serial.close()
+            self.connected = False
+            print("Arduino LCD 連接已關閉")
 
 class ElevatorControlSim:
     def __init__(self, master):
@@ -142,6 +223,9 @@ class ElevatorControlSim:
         self.info_label = tk.Label(self.control_frame, text="狀態：Idle", wraplength=280)
         self.info_label.pack(pady=10)
 
+        # 初始化 Arduino LCD
+        self.arduino_display = ArduinoDisplay()
+
         self.master.after(100, self.simulation_loop)
         self.master.after(100, self.update_penetration_detection)
     
@@ -195,13 +279,16 @@ class ElevatorControlSim:
         return self.internal_requests + self.external_requests
 
     def get_status_text(self):
-        active = self.get_active_requests()
-        reqs = "無請求" if not active else ", ".join(f"{req.floor}({req.button_type.name})" for req in active)
-        overall = "啟動" if self.full_load else "解除"
-        manual = "啟動" if self.manual_emergency else "解除"
-        auto = "啟動" if self.auto_emergency else "解除"
-        return (f"{'移動中' if self.is_moving_flag else '待命'}（{self.current_floor} 樓），請求：{reqs}；"
-                f" 緊急模式(總:{overall}, 手動:{manual}, 自動:{auto})")
+        if self.full_load:
+            if len(self.internal_requests) == 0:
+                return "等待緊急請求"
+            else:
+                target = self.internal_requests[0].floor
+                return f"前往{target}樓"
+        else:
+            active = self.get_active_requests()
+            reqs = "無請求" if not active else ", ".join(f"{req.floor}" for req in active)
+            return reqs
 
     def process_requests(self):
         active_requests = self.get_active_requests()
@@ -388,11 +475,33 @@ class ElevatorControlSim:
             
         self.master.after(100, self.update_penetration_detection)
 
+    def update_arduino_display(self):
+        """更新 Arduino LCD 顯示"""
+        if not self.arduino_display.connected:
+            return
+            
+        # 獲取當前狀態
+        status = "移動中" if self.is_moving_flag else "待命"
+        requests = self.get_status_text()
+        emergency = "緊急模式" if self.full_load else "正常"
+        
+        # 更新 LCD 顯示
+        self.arduino_display.update_display(
+            self.current_floor,
+            status,
+            requests,
+            self.full_load
+        )
+        
     def simulation_loop(self):
         self.info_label.config(text=f"狀態：{self.get_status_text()}")
+        # 更新 Arduino LCD 顯示
+        self.update_arduino_display()
         self.master.after(200, self.simulation_loop)
 
     def on_closing(self):
+        if hasattr(self, 'arduino_display'):
+            self.arduino_display.close()
         self.cap.release()
         self.master.destroy()
 
