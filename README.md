@@ -13,6 +13,13 @@
 ### 安裝必要的套件
 
 ```bash
+python3.10 -m venv .venv
+```
+```bash
+source .venv/bin/activate
+```
+
+```bash
 pip install pillow opencv-python numpy
 ```
 
