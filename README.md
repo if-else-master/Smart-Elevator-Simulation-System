@@ -62,6 +62,14 @@ python elevator_simulation.py
 1. **硬體要求**：請確保您的電腦或開發板支持 OpenCV 的相機模組，並且有連接有效的攝影機。
 2. **性能**：本模擬是基於 Tkinter GUI 和 OpenCV 實現的，對硬體性能有一定要求，較舊的設備可能會影響顯示效果。
 
+## Arduino螢幕連接
+| LCD 腳位 | Arduino UNO 腳位 |
+|----------|-------------------|
+| VCC      | 5V                |
+| GND      | GND               |
+| SDA      | A4                |
+| SCL      | A5                |
+
 ## 預期未來的功能
 
 - 增加更多樓層的支持。
