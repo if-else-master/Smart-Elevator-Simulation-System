@@ -7,8 +7,8 @@ Unistep2 myStepper(8, 9, 10, 11, stepsPerRevolution, 1000);  // IN1, IN2, IN3, I
 
 // 引腳定義
 // 微動開關
-const int limitSwitchTop = 6;     // 頂部微動開關
-const int limitSwitchBottom = 7;  // 底部微動開關
+const int limitSwitchTop = 12;     // 頂部微動開關
+const int limitSwitchBottom = 13;  // 底部微動開關
 
 // === 全域變數 ===
 // 電梯狀態
