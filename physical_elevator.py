@@ -78,6 +78,10 @@ class ArduinoController:
                     self.receive_thread = threading.Thread(target=self.receive_data, daemon=True)
                     self.receive_thread.start()
                     
+                    # 連接成功後立即初始化電梯在1樓
+                    time.sleep(0.5)  # 等待Arduino完全準備好
+                    self.send_command("INIT")
+                    
                     if self.connection_callback:
                         self.connection_callback(True, f"已連接到 {port}")
                     return True
@@ -214,6 +218,10 @@ class ArduinoController:
                 # 校準相關訊息
                 print(f"🔧 校準: {message}")
                 
+            elif "初始化" in message or "init" in message.lower():
+                # 初始化相關訊息
+                print(f"🏠 初始化: {message}")
+                
             else:
                 # 其他訊息
                 print(f"📨 Arduino: {message}")
@@ -265,6 +273,11 @@ class ArduinoController:
     def test_motor(self):
         """測試馬達"""
         self.send_command("TEST")
+        
+    def initialize_elevator(self):
+        """初始化電梯到1樓位置（不移動馬達）"""
+        if self.send_command("INIT"):
+            print("🏠 初始化電梯到1樓位置")
         
     def close(self):
         """關閉連接"""
@@ -501,6 +514,15 @@ class SimpleElevatorGUI:
                                       command=self.update_status,
                                       bg="lightgray", font=("Arial", 11))
         self.status_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        
+        # 第三行按鈕
+        button_row3 = tk.Frame(self.system_frame)
+        button_row3.pack(fill=tk.X, pady=3)
+        
+        self.init_button = tk.Button(button_row3, text="初始化1樓", 
+                                    command=self.initialize_elevator,
+                                    bg="lightcyan", font=("Arial", 11))
+        self.init_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
         
         # 緊急模式指示
         self.emergency_frame = tk.Frame(right_frame)
@@ -909,6 +931,33 @@ class SimpleElevatorGUI:
         self.log_message("🔧 開始測試馬達...")
         self.arduino.test_motor()
         
+    def initialize_elevator(self):
+        """初始化電梯到1樓"""
+        if not self.arduino.connected:
+            self.log_message("❌ Arduino未連接，無法初始化")
+            return
+            
+        self.log_message("🏠 手動初始化電梯到1樓...")
+        self.arduino.initialize_elevator()
+        
+        # 重置GUI狀態
+        self.current_floor = 1
+        self.target_floor = 1
+        self.is_moving = False
+        self.emergency_mode = False
+        self.current_direction = 0
+        self.floor_requests.clear()
+        self.pending_floors.clear()
+        
+        # 更新GUI顯示
+        self.current_floor_label.config(text="1")
+        self.target_floor_label.config(text="1")
+        self.move_status_label.config(text="待命", fg="black")
+        self.requests_label.config(text="無")
+        self.update_direction_display()
+        
+        self.log_message("✅ 電梯已初始化到1樓")
+        
     def update_status(self):
         """更新狀態"""
         if self.arduino.connected:
@@ -958,6 +1007,27 @@ class SimpleElevatorGUI:
                 fg="green"
             )
             self.log_message(f"✅ Arduino連接成功: {message}")
+            
+            # 自動重置GUI狀態到1樓
+            self.current_floor = 1
+            self.target_floor = 1
+            self.is_moving = False
+            self.emergency_mode = False
+            self.auto_emergency = False
+            self.manual_emergency = False
+            self.current_direction = 0
+            self.floor_requests.clear()
+            self.pending_floors.clear()
+            
+            # 更新GUI顯示
+            self.current_floor_label.config(text="1")
+            self.target_floor_label.config(text="1")
+            self.move_status_label.config(text="待命", fg="black")
+            self.requests_label.config(text="無")
+            self.update_direction_display()
+            self.update_emergency_mode()
+            
+            self.log_message("🏠 電梯已自動初始化到1樓，可以開始使用")
         else:
             self.arduino_status_label.config(
                 text=f"🔴 Arduino: 未連接", 

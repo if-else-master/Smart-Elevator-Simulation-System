@@ -46,14 +46,14 @@ void setup() {
   Serial.println("馬達測試中...");
   
   // 測試馬達轉動 - 使用Unistep2
-  myStepper.move(100);
+  myStepper.move(-100);
   while(myStepper.stepsToGo() != 0) {
     myStepper.run();
     delay(1);
   }
   delay(500);
   
-  myStepper.move(-100);
+  myStepper.move(100);
   while(myStepper.stepsToGo() != 0) {
     myStepper.run();
     delay(1);
@@ -61,8 +61,8 @@ void setup() {
   
   Serial.println("馬達測試完成");
   
-  // 初始化樓層位置
-  calibrateFloorPositions();
+  // 初始化樓層位置（設定預設值，不實際移動）
+  initializeFloorPositions();
   
   Serial.println("Arduino Elevator Ready");
 }
@@ -191,6 +191,39 @@ int calculateCurrentFloor() {
   return closestFloor;
 }
 
+// === 初始化樓層位置（預設值，不移動馬達） ===
+void initializeFloorPositions() {
+  // 設定預設的樓層位置（基於經驗值）
+  floorPositions[1] = 0;        // 1樓 = 0步
+  floorPositions[2] = 1000;     // 2樓 = 1000步
+  floorPositions[3] = 2000;     // 3樓 = 2000步
+  stepsPerFloor = 1000;         // 每層預設1000步
+  
+  // 設定初始位置為1樓
+  currentPosition = 0;
+  currentFloor = 1;
+  targetFloor = 1;
+  isMoving = false;
+  emergencyMode = false;
+  
+  Serial.println("樓層位置初始化完成（預設值）");
+  Serial.print("1樓位置: "); Serial.println(floorPositions[1]);
+  Serial.print("2樓位置: "); Serial.println(floorPositions[2]);
+  Serial.print("3樓位置: "); Serial.println(floorPositions[3]);
+  Serial.print("每層步數: "); Serial.println(stepsPerFloor);
+  Serial.println("電梯初始化在1樓");
+  
+  // 回報初始化完成狀態
+  Serial.print("STATUS:");
+  Serial.print(currentFloor);
+  Serial.print(":");
+  Serial.print(targetFloor);
+  Serial.print(":");
+  Serial.print(isMoving ? "MOVING" : "IDLE");
+  Serial.print(":");
+  Serial.println(emergencyMode ? "EMERGENCY" : "NORMAL");
+}
+
 // === 校準樓層位置 ===
 void calibrateFloorPositions() {
   isCalibrating = true;
@@ -200,7 +233,7 @@ void calibrateFloorPositions() {
   // 先移動到底部 - 使用Unistep2
   currentPosition = 0;
   int stepCount = 0;
-  myStepper.move(-10000);  // 大步數往下移動
+  myStepper.move(10000);  // 大步數往下移動
   
   while(digitalRead(limitSwitchBottom) == HIGH && stepCount < 10000) {
     myStepper.run();
@@ -232,7 +265,7 @@ void calibrateFloorPositions() {
   Serial.println("移動到頂部");
   
   stepCount = 0;
-  myStepper.move(10000);  // 大步數往上移動
+  myStepper.move(-10000);  // 大步數往上移動
   
   while(digitalRead(limitSwitchTop) == HIGH && stepCount < 10000) {
     myStepper.run();
@@ -315,7 +348,7 @@ void moveToFloor(int floor) {
   }
   
   // 使用Unistep2移動
-  myStepper.move(stepsToMove);
+  myStepper.move(-stepsToMove);
   
   // 更新當前位置
   currentPosition = targetPosition;
@@ -348,16 +381,20 @@ void processCommand(String command) {
     // 校準命令
     calibrateFloorPositions();
   }
+  else if(command == "INIT") {
+    // 初始化命令 - 重新初始化電梯在1樓
+    initializeFloorPositions();
+  }
   else if(command == "TEST") {
     // 馬達測試命令
     Serial.println("開始馬達測試");
-    myStepper.move(200);
+    myStepper.move(-200);
     while(myStepper.stepsToGo() != 0) {
       myStepper.run();
       delay(1);
     }
     delay(500);
-    myStepper.move(-200);
+    myStepper.move(200);
     while(myStepper.stepsToGo() != 0) {
       myStepper.run();
       delay(1);
